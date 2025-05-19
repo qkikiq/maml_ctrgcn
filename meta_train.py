@@ -236,6 +236,13 @@ class Processor():
         self.arg = arg  # 保存传入的参数对象
         self.save_arg()  # 调用方法保存参数到文件
 
+        # 初始化TensorBoard写入器
+        if self.arg.phase == 'train':
+            self.train_writer = SummaryWriter(
+                os.path.join(self.arg.work_dir, 'train'), 'train')
+            self.test_writer = SummaryWriter(
+                os.path.join(self.arg.work_dir, 'test'), 'test')
+
         # 加载模型
         self.load_model()
 
@@ -570,8 +577,10 @@ class Processor():
             self.print_log(f'Seed: {self.arg.seed}')
 
             # 关闭TensorBoard写入器
-            # self.train_writer.close()
-            # self.test_writer.close()
+            if hasattr(self, 'train_writer'):
+                self.train_writer.close()
+            if hasattr(self, 'test_writer'):
+                self.test_writer.close()
 
         # elif self.arg.phase == 'test':
         #     self.print_log('Meta-Testing Phase')

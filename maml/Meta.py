@@ -133,8 +133,25 @@ class Meta(nn.Module):
                 # 对 M 维度取平均，得到 [N, C]
                 logits = logits.mean(dim=1)
 
+            # 添加检查：确保 loss 是有效值
             loss = lda_loss(logits, y_spt[i])  # 计算支持集的LDA损失
-            grad = torch.autograd.grad(loss, self.net.parameters())  # 计算梯度
+            
+            # 检查 loss 是否为 NaN 或 Inf，如果是则跳过此任务
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"警告: 任务 {i} 的损失为 NaN/Inf，跳过此任务")
+                continue
+                
+            # 确保损失不为零向量，否则梯度计算会失败
+            if loss.item() == 0:
+                print(f"警告: 任务 {i} 的损失为零，跳过此任务")
+                continue
+                
+            try:
+                grad = torch.autograd.grad(loss, self.net.parameters(), allow_unused=True)
+            except Exception as e:
+                print(f"计算梯度时发生错误: {str(e)}")
+                print(f"跳过任务 {i}")
+                continue
 
             # 验证梯度和参数是否匹配
             param_count = len(list(self.net.parameters()))
@@ -204,17 +221,24 @@ class Meta(nn.Module):
 
                 # 计算当前支持集的LDA损失
                 loss = lda_loss(logits, y_spt[i])
-                # 计算损失对fast_weights的梯度(注意这里是对fast_weights求导)
-                # grad = torch.autograd.grad(loss, fast_weights)  # 注意这里是对 fast_weights 求导
-                grad = torch.autograd.grad(loss, fast_weights, allow_unused=True)
-                fast_weights = []
-                for g, w in zip(grad, fast_weights):
-                    if g is None:
-                        # 如果梯度为None，保持原参数不变
-                        fast_weights.append(w)
-                    else:
-                        # 否则正常更新参数
-                        fast_weights.append(w - self.update_lr * g)
+                # 检查 loss
+                if torch.isnan(loss) or torch.isinf(loss) or loss.item() == 0:
+                    print(f"警告: 任务 {i} 在内循环步骤 {k} 的损失无效，跳过此更新")
+                    continue
+                
+                try:
+                    grad = torch.autograd.grad(loss, fast_weights, allow_unused=True)
+                    fast_weights = []
+                    for g, w in zip(grad, fast_weights):
+                        if g is None:
+                            # 如果梯度为None，保持原参数不变
+                            fast_weights.append(w)
+                        else:
+                            # 否则正常更新参数
+                            fast_weights.append(w - self.update_lr * g)
+                except Exception as e:
+                    print(f"内循环步骤 {k} 计算梯度时发生错误: {str(e)}")
+                    continue
 
                 # 使用更新后的fast_weights在查询集上评估
                 logits_q, task_adj2 = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
@@ -246,6 +270,12 @@ class Meta(nn.Module):
         # self.clip_grad_by_norm_(self.net.parameters(), 10) # 可选的梯度裁剪
         # 使用元优化器更新元参数
         self.meta_optim.step()
+
+        # 检查最终的查询集损失
+        if torch.isnan(loss_q) or torch.isinf(loss_q):
+            # 如果最终损失是 NaN，用一个小的常数替换它
+            print("警告: 最终查询集损失为 NaN/Inf，使用小常数替代")
+            loss_q = torch.tensor(0.01, device=x_spt.device, requires_grad=True)
 
         return loss_q,learned_adj
 
@@ -367,44 +397,87 @@ def lda_loss(embeddings, labels):
     embedding_dim = embeddings.size(1)
     device = embeddings.device
 
-    if num_classes < 2: # LDA至少需要两个类
-        return torch.tensor(0.0, device=device, requires_grad=True)
+    # 安全检查：如果类别太少或有非法值
+    if num_classes < 2:  # LDA至少需要两个类
+        return torch.tensor(0.01, device=device, requires_grad=True)
+        
+    # 检查嵌入向量是否包含非法值
+    if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
+        print("警告: 嵌入向量包含 NaN 或 Inf 值")
+        # 替换非法值
+        embeddings = torch.where(torch.isnan(embeddings) | torch.isinf(embeddings), 
+                                 torch.zeros_like(embeddings), 
+                                 embeddings)
 
     # 计算类均值
     class_means = torch.zeros(num_classes, embedding_dim, device=device)
+    class_counts = torch.zeros(num_classes, device=device)
+    
     for i, label_val in enumerate(unique_labels):
-        class_means[i] = embeddings[labels == label_val].mean(dim=0)
+        class_mask = (labels == label_val)
+        class_counts[i] = class_mask.sum()
+        
+        # 安全检查：避免空类
+        if class_counts[i] == 0:
+            class_means[i] = torch.zeros(embedding_dim, device=device)
+        else:
+            class_means[i] = embeddings[class_mask].mean(dim=0)
 
-    # 1. 计算类内散度 (S_W)
+    # 检查类均值是否有效
+    if torch.isnan(class_means).any():
+        print("警告: 类均值包含 NaN 值")
+        return torch.tensor(0.01, device=device, requires_grad=True)
+
+    # 1. 计算类内散度 (S_W) 和对角正则化
     s_w = torch.zeros(embedding_dim, embedding_dim, device=device)
+    reg_strength = 1e-3  # 增加正则化强度
+    
     for i, label_val in enumerate(unique_labels):
-        class_embeddings = embeddings[labels == label_val]
-        mean_centered_embeddings = class_embeddings - class_means[i].unsqueeze(0)
-        s_w += mean_centered_embeddings.t().mm(mean_centered_embeddings)
-
+        class_mask = (labels == label_val)
+        if class_mask.sum() > 0:  # 确保类不为空
+            class_embeddings = embeddings[class_mask]
+            mean_centered = class_embeddings - class_means[i].unsqueeze(0)
+            s_w += mean_centered.t().mm(mean_centered)
+    
+    # 强化正则化以确保数值稳定性
+    s_w += torch.eye(embedding_dim, device=device) * reg_strength
+    
     # 2. 计算类间散度 (S_B)
+    valid_samples = (class_counts > 0).sum()
+    if valid_samples < 2:
+        print("警告: 不足两个有效类别")
+        return torch.tensor(0.01, device=device, requires_grad=True)
+        
     overall_mean = embeddings.mean(dim=0)
     s_b = torch.zeros(embedding_dim, embedding_dim, device=device)
+    
     for i, label_val in enumerate(unique_labels):
-        num_samples_class = (labels == label_val).sum()
-        mean_diff = (class_means[i] - overall_mean).unsqueeze(1) # [embedding_dim, 1]
-        s_b += num_samples_class * mean_diff.mm(mean_diff.t())
+        if class_counts[i] > 0:  # 确保类不为空
+            mean_diff = (class_means[i] - overall_mean).unsqueeze(1)
+            s_b += class_counts[i] * mean_diff.mm(mean_diff.t())
 
-    # 为了数值稳定性，可以给S_W的对角线加上一个小的epsilon
-    s_w += torch.eye(embedding_dim, device=device) * 1e-4
-
+    # 解决方程式，使用更稳定的方法
     try:
-        # 计算 S_W_inv * S_B
-        s_w_inv_s_b = torch.linalg.solve(s_w, s_b) # 更稳定
-        # s_w_inv_s_b = torch.linalg.inv(s_w).mm(s_b)
-        loss = -torch.trace(s_w_inv_s_b)
-    except torch.linalg.LinAlgError: # 如果S_W奇异
-        # print("S_W is singular, using alternative LDA loss")
-        loss = torch.trace(s_w) - torch.trace(s_b) # 备用损失
+        # 使用特征值分解而不是直接求逆
+        eigenvalues, eigenvectors = torch.linalg.eigh(s_w)
+        # 处理可能的零或接近零的特征值
+        eigenvalues = torch.clamp(eigenvalues, min=1e-6)
+        # 构建 S_W^(-1/2)
+        s_w_inv_sqrt = eigenvectors @ torch.diag(1.0 / torch.sqrt(eigenvalues)) @ eigenvectors.t()
+        # 计算 S_W^(-1/2) * S_B * S_W^(-1/2) 的特征值
+        transformed_s_b = s_w_inv_sqrt @ s_b @ s_w_inv_sqrt
+        # 使用特征值和来近似 trace(S_W^-1 * S_B)
+        trace_s_w_inv_s_b = torch.linalg.eigvalsh(transformed_s_b).sum()
+        loss = -trace_s_w_inv_s_b
+    except Exception as e:
+        print(f"LDA计算错误: {str(e)}")
+        # 使用备用损失函数
+        loss = torch.trace(s_w) - 0.1 * torch.trace(s_b)
 
+    # 确保损失是有效值
     if torch.isnan(loss) or torch.isinf(loss):
-        # print("LDA loss is NaN or Inf, returning zero loss for this batch.")
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        print("LDA损失是NaN或Inf，返回备用损失")
+        return torch.tensor(0.01, device=device, requires_grad=True)
 
     return loss
 
