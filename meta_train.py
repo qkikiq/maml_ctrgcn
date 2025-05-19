@@ -387,8 +387,16 @@ class Processor():
             adj_spt = self.generate_adjacency_matrix(x_spt).cuda(self.output_device)
             adj_qry = self.generate_adjacency_matrix(x_qry).cuda(self.output_device)
             
-            # 执行元学习训练步骤 - 只接收 loss 和 learned_adj
-            loss, learned_adj = self.model(x_spt, y_spt, adj_spt, x_qry, y_qry, adj_qry)
+            # 执行元学习训练步骤
+            try:
+                loss, learned_adj = self.model(x_spt, y_spt, adj_spt, x_qry, y_qry, adj_qry)
+            except Exception as e:
+                # 捕获并记录错误
+                self.print_log(f"训练步骤 {step} 出错: {str(e)}")
+                import traceback
+                self.print_log(traceback.format_exc())
+                # 跳过当前批次
+                continue
             
             # 可以选择保存学习后的邻接矩阵或用于下一批次
             # 例如，每隔一定步数保存一次
@@ -419,10 +427,10 @@ class Processor():
                 )
 
                 # 如果在训练阶段，记录到TensorBoard - 只记录 loss
-                if hasattr(self, 'train_writer'):
-                    self.train_writer.add_scalar('meta_train_loss', loss.item(), self.global_step)
-                    # 移除 self.train_writer.add_scalar('meta_train_acc', acc, self.global_step)
-                    self.global_step += 1
+                # if hasattr(self, 'train_writer'):
+                #     self.train_writer.add_scalar('meta_train_loss', loss.item(), self.global_step)
+                #     # 移除 self.train_writer.add_scalar('meta_train_acc', acc, self.global_step)
+                #     self.global_step += 1
 
         # 计算整个周期的平均损失 - 只计算 loss
         mean_loss = np.mean(loss_values)
@@ -562,7 +570,7 @@ class Processor():
             self.print_log(f'Seed: {self.arg.seed}')
 
             # 关闭TensorBoard写入器
-            self.train_writer.close()
+            # self.train_writer.close()
             # self.test_writer.close()
 
         # elif self.arg.phase == 'test':

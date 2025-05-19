@@ -187,10 +187,17 @@ class Learner(nn.Module):
         :return: 网络的输出。
         """
         # 如果未提供vars，则使用模型自身的参数
+        # 修改 vars 参数处理逻辑，增加边界检查
         if vars is None:
             vars_list = self.vars
         else:
-            vars_list = vars
+            # 如果提供的参数列表长度不够，使用默认参数
+            if len(vars) < len(self.vars) - self.num_subsets_A:
+                # 打印警告
+                print(f"警告: 提供的参数列表({len(vars)})短于预期({len(self.vars)})。将使用默认参数。")
+                vars_list = self.vars
+            else:
+                vars_list = vars
 
         param_idx = 0  # vars_list中的参数索引
         bn_param_idx = 0  # vars_bn中的参数索引
@@ -238,15 +245,20 @@ class Learner(nn.Module):
 
         # 获取学习的邻接矩阵参数（从 vars_list 或 self.adj_params）
         learned_adjacency = []
-        
+
         if vars is None:
             # 如果没有提供 vars，使用类的邻接矩阵参数
             adj_params = self.adj_params
         else:
-            # 从提供的 vars 中提取邻接矩阵参数（在 vars 列表的末尾）
-            adj_params_start_idx = len(vars) - self.num_subsets_A
-            adj_params = vars[adj_params_start_idx:]
-        #todo
+            # 检查 vars 的参数数量是否足够
+            if len(vars) < len(self.vars):
+                # vars 中可能不包含邻接矩阵参数，使用类自己的邻接矩阵参数
+                adj_params = self.adj_params
+            else:
+                # 从提供的 vars 中提取邻接矩阵参数（在 vars 列表的末尾）
+                adj_params_start_idx = len(vars) - self.num_subsets_A
+                adj_params = vars[adj_params_start_idx:]
+
         # 处理输入的邻接矩阵
         # 如果提供了 A_input，将其与学习的参数结合
         # 否则，仅使用学习的参数
@@ -298,15 +310,26 @@ class Learner(nn.Module):
                 y_aggregated = None  # 用于聚合各个子图卷积结果
 
                 # 从vars_list中提取当前GCN层的所有子卷积的权重和偏置
-                conv_weights_biases = []
-                for _ in range(self.num_subsets_A):
-                    w_conv = vars_list[param_idx]
-                    b_conv = vars_list[param_idx + 1]
-                    conv_weights_biases.append((w_conv, b_conv))
-                    param_idx += 2  # 每个卷积层消耗2个参数 (权重和偏置)
+                # 添加参数索引安全检查
+                try:
+                    conv_weights_biases = []
+                    for _ in range(self.num_subsets_A):
+                        if param_idx + 1 >= len(vars_list):
+                            raise IndexError(f"参数索引越界: param_idx={param_idx}, len(vars_list)={len(vars_list)}")
+                        w_conv = vars_list[param_idx]
+                        b_conv = vars_list[param_idx + 1]
+                        conv_weights_biases.append((w_conv, b_conv))
+                        param_idx += 2  # 每个卷积层消耗2个参数 (权重和偏置)
 
-                alpha_param = vars_list[param_idx]  # 提取alpha参数
-                param_idx += 1
+                    # 更安全的索引检查
+                    if param_idx >= len(vars_list):
+                        raise IndexError(f"参数索引越界: param_idx={param_idx}, len(vars_list)={len(vars_list)}")
+                    alpha_param = vars_list[param_idx]  # 提取alpha参数
+                    param_idx += 1
+                except IndexError as e:
+                    print(f"错误: {e}")
+                    # 回退到使用模型默认参数
+                    return self.forward(x_input, A_input, vars=None, bn_training=bn_training)
 
                 for k_subset in range(self.num_subsets_A):  # 遍历每个邻接矩阵子集
                     # 获取邻接矩阵，处理维度不匹配问题

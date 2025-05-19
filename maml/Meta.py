@@ -123,10 +123,7 @@ class Meta(nn.Module):
 
         # 遍历每个任务(每个episodic task)
         for i in range(task_num):
-            # 1. 初始评估  - 在任何参数更新前计算模型性能基准
-            #    注意: 这里的self.net.parameters()是元参数theta
-            #    BN层的training状态在MAML中通常保持True，因为它也参与内循环的适应，或者，如果BN层的统计数据不希望在内循环中改变，可以考虑更复杂的BN处理
-            # 用当前参数获取支持集的嵌入表示
+            # 1. 初始评估
             logits, task_adj = self.net(x_spt[i], adj_spt[i], vars=None, bn_training=True)
 
             if logits.size(0) != setsz:  # 检查是否不匹配
@@ -138,7 +135,28 @@ class Meta(nn.Module):
 
             loss = lda_loss(logits, y_spt[i])  # 计算支持集的LDA损失
             grad = torch.autograd.grad(loss, self.net.parameters())  # 计算梯度
-            fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, self.net.parameters())))  # 使用梯度和学习率更新权重
+
+            # 验证梯度和参数是否匹配
+            param_count = len(list(self.net.parameters()))
+            grad_count = len(grad)
+            if param_count != grad_count:
+                print(f"警告: 参数数量({param_count})与梯度数量({grad_count})不匹配!")
+
+            # 确保安全地创建 fast_weights
+            fast_weights = []
+            for idx, (g, p) in enumerate(zip(grad, self.net.parameters())):
+                if g is None:
+                    # 如果某个参数没有梯度，保持原参数不变
+                    fast_weights.append(p)
+                else:
+                    fast_weights.append(p - self.update_lr * g)
+
+            # 确保 fast_weights 长度等于模型参数数量
+            if len(fast_weights) != param_count:
+                print(f"警告: fast_weights长度({len(fast_weights)})与模型参数数量({param_count})不匹配!")
+                # 确保安全，使用原始参数
+                fast_weights = list(self.net.parameters())
+
             # 在第一次更新前评估模型
             with torch.no_grad():  # 不需要梯度计算，节省内存
                 # 获取查询集的初始嵌入表示(用原始元参数)
@@ -186,12 +204,17 @@ class Meta(nn.Module):
 
                 # 计算当前支持集的LDA损失
                 loss = lda_loss(logits, y_spt[i])
-
                 # 计算损失对fast_weights的梯度(注意这里是对fast_weights求导)
                 # grad = torch.autograd.grad(loss, fast_weights)  # 注意这里是对 fast_weights 求导
                 grad = torch.autograd.grad(loss, fast_weights, allow_unused=True)
-                # 更新fast_weights：θ'k+1 = θ'k - α∇θ'kL
-                fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights)))
+                fast_weights = []
+                for g, w in zip(grad, fast_weights):
+                    if g is None:
+                        # 如果梯度为None，保持原参数不变
+                        fast_weights.append(w)
+                    else:
+                        # 否则正常更新参数
+                        fast_weights.append(w - self.update_lr * g)
 
                 # 使用更新后的fast_weights在查询集上评估
                 logits_q, task_adj2 = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
