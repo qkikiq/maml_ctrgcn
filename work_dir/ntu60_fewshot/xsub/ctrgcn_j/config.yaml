@@ -1,0 +1,99 @@
+# command line: D:\PycharmProjects\CTR-GCN-main\meta_train.py --config config/Small_1shot_v1.yaml
+
+batch_size: 256
+config: config/Small_1shot_v1.yaml
+device: 0
+eval_interval: 5
+feeder: feeders.ntu_few_shot.ntu60_few_shot
+k_qry: 15
+k_spt: 5
+log_interval: 100
+meta_lr: 0.001
+model: maml.Meta.Model
+model_args:
+  learner_config:
+  - - gcn
+    - in_channels: 3
+      out_channels: 64
+      residual: true
+  - - relu
+    - {}
+  - - gcn
+    - in_channels: 64
+      out_channels: 64
+      residual: true
+  - - relu
+    - {}
+  - - gcn
+    - in_channels: 64
+      out_channels: 128
+      residual: true
+  - - relu
+    - {}
+  - - global_mean_pool
+    - {}
+  - - linear
+    - in_features: 128
+      out_features: 128
+  num_nodes: 25
+  num_subsets_A: 3
+n_way: 60
+nesterov: false
+num_epoch: 80
+num_meta_epoch: 100
+num_worker: 0
+optimizer: SGD
+phase: train
+print_log: true
+save_epoch: 30
+save_interval: 1
+save_score: false
+seed: 1
+show_topk:
+- 1
+- 5
+start_epoch: 0
+start_meta_epoch: 0
+task_num: 10
+test_batch_size: 256
+test_feeder_args:
+  META_BATCH: true
+  VAL_FRE_ITER: 1000
+  batchsz: 10000
+  bone: false
+  data_list: null
+  data_path: data/ntu/NTU60_CS.npz
+  debug: false
+  k_qry: 15
+  k_spt: 5
+  label_path: null
+  mode: test
+  n_way: 5
+  normalization: false
+  random_choose: false
+  random_move: false
+  random_rot: false
+  random_shift: false
+  task_num: 10
+  use_mmap: false
+  vel: false
+  window_size: 300
+test_iterations: 100
+train_feeder_args:
+  bone: false
+  data_path: data/ntu/NTU60_CS.npz
+  debug: false
+  label_path: null
+  normalization: false
+  random_choose: false
+  random_move: false
+  random_rot: true
+  random_shift: false
+  split: train
+  use_mmap: false
+  vel: false
+train_iterations: 1000
+update_lr: 0.01
+update_step: 5
+update_step_test: 10
+work_dir: ./work_dir/ntu60_fewshot/xsub/ctrgcn_j

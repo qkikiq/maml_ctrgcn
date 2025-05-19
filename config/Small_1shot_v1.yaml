@@ -1,0 +1,79 @@
+work_dir: ./work_dir/ntu60_fewshot/xsub/ctrgcn_j
+
+feeder: feeders.ntu_few_shot.ntu60_few_shot # Make sure this path is correct
+
+train_feeder_args:
+  # Parameters for Feeder.__init__
+  data_path: /dadaY/xinyu/dataset/ntu60/NTU60_CS.npz
+  label_path: null              # Or path to label file if separate
+  split: train                   # Was 'split'
+  random_choose: False
+  random_shift: False
+  random_move: False
+  random_rot: True
+  normalization: False
+  debug: False
+  use_mmap: False
+  bone: False
+  vel: False
+
+  batchsz: 4
+#  META_BATCH: true
+  n_way: 5
+  k_spt: 1
+  k_qry: 15
+  #  task_num: 10           # Query samples per class for general test tasks (if different logic applies)
+#  VAL_FRE_ITER: 100
+
+  # Parameters for MAML data sampling / DataLoader / training workflow
+#  META_BATCH: true
+#  NUM_SAMPLES: 1000000
+#  WAY: 5
+#  SHOT: 1
+#  QUERY_PER_CLASS: 5
+#  NUM_TRAIN_TASKS: 40000
+#  VAL_FRE_ITER: 1000
+#  batch_size : 300              # Used by DataLoader or task sampler
+#  num_worker : 1                # Used by DataLoader
+
+test_feeder_args:
+  # Parameters for Feeder.__init__
+  data_path: data/ntu/NTU60_CS.npz
+  label_path: null              # Or path to label file if separate
+  mode: test                    # Was 'split'
+  random_choose: False
+  random_shift: False
+  random_move: False
+  random_rot: False             # Typically False for testing
+  normalization: False
+  debug: False
+  use_mmap: False
+  bone: False
+  vel: False
+  data_list: null               # Or path to a specific data list file
+
+  # Parameters for MAML data sampling / DataLoader / testing workflow
+  batchsz: 4
+#  META_BATCH: true
+  n_way: 5
+  k_spt: 1
+  k_qry: 15
+#  task_num: 10           # Query samples per class for general test tasks (if different logic applies)
+#  VAL_FRE_ITER: 100         # Might be a global parameter rather than test_feeder specific
+  # batch_size & num_worker for test DataLoader would typically be set in the main script
+  # based on how many test tasks are processed in parallel, or if not present here,
+  # will rely on global batch_size/test_batch_size and num_worker args.
+
+model: maml.Meta.Model # Make sure this path is correct
+model_args:
+  num_nodes: 25
+  num_subsets_A: 3
+  learner_config:
+    - ['gcn', {'in_channels': 3, 'out_channels': 64, 'residual': True}]
+    - ['relu', {}]
+    - ['gcn', {'in_channels': 64, 'out_channels': 64, 'residual': True}]
+    - ['relu', {}]
+    - ['gcn', {'in_channels': 64, 'out_channels': 128, 'residual': True}]
+    - ['relu', {}]
+    - ['global_mean_pool', {}]
+    - ['linear', {'in_features': 128, 'out_features': 128}]

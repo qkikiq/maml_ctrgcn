@@ -1,0 +1,75 @@
+work_dir: ./work_dir/ntu60_fewshot/xsub/ctrgcn_j
+
+# feeder 相关配置保持不变
+feeder: feeders.ntu_few_shot.ntu60_few_shot
+train_feeder_args:
+  data_path: data/ntu/NTU60_CS.npz
+  split: train
+  debug: False
+  random_rot: True
+  vel: False      # 注意：如果为 True，特征维度会改变
+  bone: False     # 注意：如果为 True，特征维度会改变
+  batch_size : 300
+  META_BATCH: true
+  NUM_SAMPLES: 1000000
+  WAY: 5
+  SHOT: 1
+  QUERY_PER_CLASS: 5
+  QUERY_PER_CLASS_TEST: 1
+  NUM_TRAIN_TASKS: 40000
+  NUM_TEST_TASKS: 10000
+  VAL_FRE_ITER: 1000
+  num_worker : 1
+
+test_feeder_args:
+  data_path: data/ntu/NTU60_CS.npz
+  split: test
+  window_size: 300
+  vel: False
+  bone: False
+  debug: False
+  META_BATCH: true
+  NUM_SAMPLES: 1000000
+  WAY: 5
+  SHOT: 1
+  QUERY_PER_CLASS: 5
+  QUERY_PER_CLASS_TEST: 1
+  NUM_TRAIN_TASKS: 40000
+  NUM_TEST_TASKS: 10000
+  VAL_FRE_ITER: 1000
+
+# 模型配置
+model: maml.Meta.Model # 指向 Meta 类，确保路径正确
+model_args:
+  # Meta 类自身的参数，如果 Meta 类也需要从 model_args 取特定值的话。
+  # 但通常像 update_lr, meta_lr 这类MAML核心参数由 get_parser() 直接定义为顶级命令行参数。
+
+  # Learner (即 self.net) 需要的参数：
+  num_nodes: 25       # GCN中图的节点数 (V)。对于NTU数据集通常是25。
+  num_subsets_A: 3    # 邻接矩阵的子集数量 (K)。这对应CTR-GCN中的A,B,C三个矩阵。
+  learner_config:     # Learner 网络的具体层配置列表
+    # 注意：这里的 'in_channels' 尤其是第一层GCN的输入通道数，
+    # 必须与你的feeder输出的每个节点的特征维度相匹配。
+    # 如果 data_path: data/ntu/NTU60_CS.npz 中每个节点有3个特征 (x,y,c 或 x,y,z)，
+    # 并且 vel=False, bone=False，则初始 in_channels 为 3。
+    # 如果你的 feeder 输出了速度或骨骼信息，这个维度会变化。
+    - ['gcn', {'in_channels': 3, 'out_channels': 64, 'residual': True}] # 第一层GCN
+    - ['relu', {}]
+    - ['gcn', {'in_channels': 64, 'out_channels': 64, 'residual': True}] # 第二层GCN
+    - ['relu', {}]
+    - ['gcn', {'in_channels': 64, 'out_channels': 128, 'residual': True}]# 第三层GCN
+    - ['relu', {}]
+    # - ['gcn', {'in_channels': 128, 'out_channels': 128, 'residual': True}] # 可以根据需要添加更多层
+    # - ['relu', {}]
+    - ['global_mean_pool', {}] # 全局平均池化，输出形状 (batch_size, 128)
+
+    # 最终输出一个固定维度的嵌入，用于后续的MAML适配和分类。
+    # 这个输出维度可以根据你的任务调整。
+    # 例如，如果直接进行N-way分类，最后一层可以是 {'in_features': 128, 'out_features': n_way}
+    # 但在MAML中，通常 Learner 输出一个嵌入，分类头在 finetune 步骤中处理。
+    # 这里我们输出一个与上一层GCN输出通道数相同的嵌入。
+    - ['linear', {'in_features': 128, 'out_features': 128}] # 输出一个128维的嵌入
+    # 你也可以选择在这里不加最后的 linear 层，直接使用 global_mean_pool 后的 128 维特征作为嵌入。
+    # 或者，如果你希望分类器在 Learner 内部，并且输出维度固定 (不依赖 n_way)，可以设定一个固定的 out_features。
+    # 如果要让 Learner 输出直接能做 N-way 分类的 logits，那么这个 linear 层的 out_features 需要动态设置为 n_way。
+    # 但 Learner 的 config 是静态加载的，所以推荐输出固定维度的嵌入。

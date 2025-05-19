@@ -1,0 +1,43 @@
+# 忽略data文件夹
+data/
+
+# Python字节码文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C扩展
+*.so
+
+# 分发/打包
+dist/
+build/
+*.egg-info/
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE相关文件
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 日志文件
+*.log
+
+# 本地配置文件
+.env
+.env.local
+
+# 模型权重和缓存文件
+*.pth
+*.pt
+*.h5
+.cache/
+
+# 其他常见临时文件
+.DS_Store
+Thumbs.db

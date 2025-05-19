@@ -1,0 +1,13 @@
+[2025-04-16 16:35:52] Initializing Meta Network...
+[2025-04-16 16:35:56] MetaNetwork params: in_channels=3, out_channels=64, num_nodes=25, num_classes=60
+[2025-04-16 16:36:01] Meta Network Initialized.
+[2025-04-16 16:36:02] Loading model: model.ctrgcn.Model
+[2025-04-16 16:36:02] Model args: {'num_class': 60, 'num_point': 25, 'num_person': 2, 'graph': 'graph.ntu_rgb_d.Graph', 'graph_args': {'labeling_mode': 'spatial'}}
+[2025-04-16 16:36:02] Loss function: CrossEntropyLoss
+[2025-04-16 16:36:02] No pretrained weights specified for the main model.
+[2025-04-16 16:36:02] Main model's forward method accepts 'adj' parameter. Compatibility check passed.
+[2025-04-16 16:36:06] Collected 564 parameter groups from main model.
+[2025-04-16 16:36:06] Adding 10 parameter groups from MetaNetwork GCN to optimizer.
+[2025-04-16 16:36:06] Optimizer loaded: SGD with initial LR: 0.100000
+[2025-04-16 16:36:06] Using learning rate warm up for 5 epochs.
+[2025-04-16 16:36:19] Data loaded.
