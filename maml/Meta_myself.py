@@ -63,14 +63,19 @@ class Meta(nn.Module):
         #                    # num_subsets_A=num_subsets_A_for_learner
         #                    )
 
+        self.graph_generator = GraphGenerator(
+            num_joints=25,
+            in_channels=3
+        )
+
+
         self.net = Learner(
             num_joints=num_nodes_for_learner,
             in_channels=3,  # 根据骨架数据的通道数
             out_channels=128,  # 可以从配置中读取
             num_classes=self.n_way  # 确保与元学习任务一致
-        )
+                           )
 
-        # meta_params = list(graph_generator.parameters()) + list(learner.parameters())
         # 定义元优化器 (Meta Optimizer)，用于更新 Learner 的参数 (self.net.parameters())
         # 例如，使用 Adam 优化器
         self.meta_optim = torch.optim.Adam(self.net.parameters(), lr=self.meta_lr)
@@ -105,59 +110,65 @@ class Meta(nn.Module):
                 g.data.mul_(clip_coef)
         return total_norm / counter
 
-    def forward(self, x_spt, y_spt, x_qry, y_qry):
+    def forward(self, x_spt, y_spt, x_qry, y_qry):  # 增加了adj_spt, adj_qry参数
         """
         元训练步骤
-        :param x_spt:   [b, setsz_spt, c, t, v, m] 支持集输入
-        :param y_spt:   [b, setsz_spt] 支持集标签
-        :param x_qry:   [b, setsz_qry, c, t, v, m] 查询集输入
-        :param y_qry:   [b, setsz_qry] 查询集标签
+        :param x_spt:   [b, setsz_spt, feature_dim] 或 [b, setsz_spt, num_nodes, node_feature_dim] (取决于Learner输入)
+        :param y_spt:   [b, setsz_spt] (标签)
+        :param adj_spt: [b, setsz_spt, num_nodes, num_nodes] (支持集邻接矩阵)
+        :param x_qry:   [b, setsz_qry, feature_dim] 或 [b, setsz_qry, num_nodes, node_feature_dim]
+        :param y_qry:   [b, setsz_qry] (标签)
+        :param adj_qry: [b, setsz_qry, num_nodes, num_nodes] (查询集邻接矩阵)
         :return: query set上的平均损失和学习后的邻接矩阵
         """
-        task_num, setsz, c, t, v, m = x_spt.size()
-        task_num, querysz, c, t, v, m = x_qry.size()
+        task_num, setsz, c, t,v,m = x_spt.size()
+        task_num,querysz, c, t,v,m = x_qry.size()
         
+        # 获取任务数量(meta-batch size)，即有多少个独立的任务需要元学习
+        task_num = x_spt.size(0)
+
+        # 获取每个任务的查询集大小(样本数)
+        querysz = x_qry.size(1)
+
         # 初始化列表存储每个更新步骤后的查询集损失和精度
         losses_q = [0 for _ in range(self.update_step + 1)]
-        accs_q = [0 for _ in range(self.update_step + 1)]
+        accs_q = [0 for _ in range(self.update_step + 1)]  # 新增：跟踪精度
 
-        # 创建图生成器实例
-        graph_generator = GraphGenerator(num_joints=v, in_channels=c).to(x_spt.device)
-
-        adj_spt= graph_generator(x_spt)
-        adj_qry = graph_generator(x_qry)
-
+        # 初始化存储学习后邻接矩阵的变量
         # 初始化邻接矩阵存储
-        # adj_spt = torch.zeros(task_num, setsz, v, v).to(x_spt.device)
-        # adj_qry = torch.zeros(task_num, querysz, v, v).to(x_qry.device)
-
-
+        adj_spt = torch.zeros(task_num, setsz, v, v).to(x_spt.device)
+        adj_qry = torch.zeros(task_num, querysz, v, v).to(x_qry.device)
         learned_adj = torch.zeros_like(adj_qry)
+        # learned_adj = adj_qry.clone()  # 初始化为查询集的邻接矩阵
 
         # 遍历每个任务(每个episodic task)
         for i in range(task_num):
-            # # 为支持集和查询集生成邻接矩阵
-            # adj_spt[i] = graph_generator(x_spt[i])
-            # adj_qry[i] = graph_generator(x_qry[i])
 
-            # 1. 初始评估 - 使用原始模型参数
-            # 确保不传递额外的vars参数
-            logits, _ = self.net(x_spt[i], adj_spt[i], vars=None)
-            
-            # 使用交叉熵损失
+            adj_spt[i] = self.graph_generator(x_spt[i])
+            # 1. 初始评估
+            logits, task_adj = self.net(x_spt[i], adj_spt[i], vars=None, bn_training=True)
+            # print(logits)
+
+            # if logits.size(0) != setsz:  # 检查是否不匹配
+            #     # 假设 logits 形状为 [N*M, C]，重塑为 [N, M, C]
+            #     M = logits.size(0) // setsz
+            #     logits = logits.view(setsz, M, -1)
+            #     # 对 M 维度取平均，得到 [N, C]
+            #     logits = logits.mean(dim=1)
+
+            # 使用交叉熵损失替代LDA损失
             loss = self.loss_fn(logits, y_spt[i])
             
-            # # 检查 loss 是否为 NaN 或 Inf，如果是则跳过此任务
-            # if torch.isnan(loss) or torch.isinf(loss):
-            #     print(f"警告: 任务 {i} 的损失为 NaN/Inf，跳过此任务")
-            #     continue
-            #
-            # # 确保损失不为零向量，否则梯度计算会失败
-            # if loss.item() == 0:
-            #     print(f"警告: 任务 {i} 的损失为零，跳过此任务")
-            #     continue
-            
-            # 计算梯度并更新快速权重
+            # 检查 loss 是否为 NaN 或 Inf，如果是则跳过此任务
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"警告: 任务 {i} 的损失为 NaN/Inf，跳过此任务")
+                continue
+                
+            # 确保损失不为零向量，否则梯度计算会失败
+            if loss.item() == 0:
+                print(f"警告: 任务 {i} 的损失为零，跳过此任务")
+                continue
+                
             try:
                 grad = torch.autograd.grad(loss, self.net.parameters(), allow_unused=True)
             except Exception as e:
@@ -187,9 +198,14 @@ class Meta(nn.Module):
                 fast_weights = list(self.net.parameters())
 
             # 在第一次更新前评估模型
-            with torch.no_grad():
+            with torch.no_grad():  # 不需要梯度计算，节省内存
                 # 获取查询集的初始输出(用原始元参数)
-                logits_q, _ = self.net(x_qry[i], adj_qry[i])
+                logits_q, task_adj2 = self.net(x_qry[i], adj_qry[i], vars=self.net.parameters(), bn_training=True)
+
+                # if logits_q.size(0) != querysz:  # 检查是否不匹配
+                #     M = logits_q.size(0) // querysz
+                #     logits_q = logits_q.view(querysz, M, -1)
+                #     logits_q = logits_q.mean(dim=1)
 
                 # 使用交叉熵损失
                 loss_q = self.loss_fn(logits_q, y_qry[i])
@@ -203,7 +219,12 @@ class Meta(nn.Module):
             # 2b. 使用更新后的参数(fast_weights)在查询集上评估第一次更新后的效果
             with torch.no_grad():
                 # 使用fast_weights获取查询集的输出
-                logits_q, _ = self.net(x_qry[i], adj_qry[i], vars=fast_weights)
+                logits_q, _ = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
+
+                # if logits_q.size(0) != querysz:  # 检查是否不匹配
+                #     M = logits_q.size(0) // querysz
+                #     logits_q = logits_q.view(querysz, M, -1)
+                #     logits_q = logits_q.mean(dim=1)
 
                 # 使用交叉熵损失
                 loss_q = self.loss_fn(logits_q, y_qry[i])
@@ -217,7 +238,12 @@ class Meta(nn.Module):
             # 2c. 进行更多内循环更新步骤(第2步到第update_step步)
             for k in range(1, self.update_step):
                 # 使用当前fast_weights计算支持集输出
-                logits, _ = self.net(x_spt[i], adj_spt[i], vars=fast_weights)
+                logits, _ = self.net(x_spt[i], adj_spt[i], vars=fast_weights, bn_training=True)
+
+                # if logits.size(0) != setsz:  # 检查是否不匹配
+                #     M = logits.size(0) // setsz
+                #     logits = logits.view(setsz, M, -1)
+                #     logits = logits.mean(dim=1)
 
                 # 使用交叉熵损失
                 loss = self.loss_fn(logits, y_spt[i])
@@ -242,7 +268,12 @@ class Meta(nn.Module):
                     continue
 
                 # 使用更新后的fast_weights在查询集上评估
-                logits_q, _ = self.net(x_qry[i], adj_qry[i], vars=fast_weights)
+                logits_q, _ = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
+
+                # if logits_q.size(0) != querysz:  # 检查是否不匹配
+                #     M = logits_q.size(0) // querysz
+                #     logits_q = logits_q.view(querysz, M, -1)
+                #     logits_q = logits_q.mean(dim=1)
 
                 # 使用交叉熵损失
                 loss_q = self.loss_fn(logits_q, y_qry[i])
@@ -253,30 +284,46 @@ class Meta(nn.Module):
                 correct = torch.eq(pred_q, y_qry[i]).sum().item()
                 accs_q[k + 1] += correct / querysz  # 累加准确率
 
-        # 保存最后一次更新后的邻接矩阵
         if self.update_step > 0:
             # 最后一次更新后使用 fast_weights 在查询集上运行模型
-            _, final_adj = self.net(x_qry[i], adj_qry[i], vars=fast_weights)
+            _, final_adj = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
+
+            # # Check if reshaping is needed
+            # if final_adj.size(0) != querysz:
+            #     # Assuming final_adj has shape [150, 3, 25, 25] and you want [75, 3, 25, 25]
+            #     # This means 150 = 75 * 2, where 2 is the M dimension
+            #     M = final_adj.size(0) // querysz
+            #
+            #     # Reshape to [75, M, 3, 25, 25]
+            #     reshaped_adj = final_adj.view(querysz, M, 3, 25, 25)
+            #
+            #     # Average over the M dimension to get [75, 3, 25, 25]
+            #     final_adj = reshaped_adj.mean(dim=1)
+
             learned_adj[i] = final_adj
 
         # 使用所有任务在最后一步内循环更新后的查询集损失进行元优化
         if losses_q[self.update_step] == 0:
+            # Create a zero tensor with requires_grad=True
             loss_q = torch.tensor(0.0, device=x_spt.device, requires_grad=True)
         else:
+            # Normal case - average the losses
             loss_q = losses_q[self.update_step] / task_num
+
+            # Ensure it's a tensor with requires_grad=True
             if not isinstance(loss_q, torch.Tensor) or not loss_q.requires_grad:
                 loss_q = torch.tensor(loss_q, device=x_spt.device, requires_grad=True)
 
-        # 计算平均准确率
+        # 计算平均准确率（可选）
         acc_q = accs_q[self.update_step] / task_num
-
-        # 执行元优化步骤
+        
         self.meta_optim.zero_grad()
-        loss_q.backward()
+        loss_q.backward()  # Now this should work
         self.meta_optim.step()
 
         # 检查最终的查询集损失
         if torch.isnan(loss_q) or torch.isinf(loss_q):
+            # 如果最终损失是 NaN，用一个小的常数替换它
             print("警告: 最终查询集损失为 NaN/Inf，使用小常数替代")
             loss_q = torch.tensor(0.01, device=x_spt.device, requires_grad=True)
 

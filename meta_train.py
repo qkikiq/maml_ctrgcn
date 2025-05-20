@@ -29,7 +29,8 @@ import yaml  # 用于读写 YAML 配置文件
 from tensorboardX import SummaryWriter  # 用于将数据写入 TensorBoard 进行可视化
 from tqdm import tqdm  # 用于显示进度条
 from maml.Meta import Meta
-from maml.create_adj import Adj_Matrix
+from maml.learner import GraphGenerator  # 确保这个导入是正确的
+
 # 导入自定义库
 from torchlight import DictAction  # 自定义的 argparse Action，用于将 key=value 形式的参数解析为字典
 
@@ -529,6 +530,7 @@ class Processor():
             #开始训练
             for meta_epoch in range(self.arg.start_meta_epoch, self.arg.num_meta_epoch):
                 self.print_log(f"\nStarting Meta-Epoch {meta_epoch + 1}/{self.arg.num_meta_epoch}")
+                                    #meta_epoch + 1：当前元训练轮数（从1开始计数） self.arg.save_interval：保存间隔（配置文件中设为1）
                 save_model_flag = (((meta_epoch + 1) % self.arg.save_interval == 0) or \
                                    (meta_epoch + 1 == self.arg.num_meta_epoch)) and \
                                   (meta_epoch + 1) > self.arg.save_epoch

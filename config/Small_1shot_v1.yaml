@@ -22,19 +22,6 @@ train_feeder_args:
   n_way: 5
   k_spt: 1
   k_qry: 15
-  #  task_num: 10           # Query samples per class for general test tasks (if different logic applies)
-#  VAL_FRE_ITER: 100
-
-  # Parameters for MAML data sampling / DataLoader / training workflow
-#  META_BATCH: true
-#  NUM_SAMPLES: 1000000
-#  WAY: 5
-#  SHOT: 1
-#  QUERY_PER_CLASS: 5
-#  NUM_TRAIN_TASKS: 40000
-#  VAL_FRE_ITER: 1000
-#  batch_size : 300              # Used by DataLoader or task sampler
-#  num_worker : 1                # Used by DataLoader
 
 test_feeder_args:
   # Parameters for Feeder.__init__
