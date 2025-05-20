@@ -5,7 +5,10 @@ import torch
 from torch import nn
 from torch import optim
 
-from maml.learner import Learner
+import torch.nn.functional as F
+# from maml.learner import Learner
+from maml.learner import Learner  # 确保这个导入是正确的
+from maml.learner import GraphGenerator  # 确保这个导入是正确的
 
 
 class Meta(nn.Module):
@@ -23,8 +26,8 @@ class Meta(nn.Module):
         super(Meta, self).__init__()
 
         # MAML 核心参数
-        self.update_lr = args.update_lr
-        self.meta_lr = args.meta_lr
+        self.update_lr = args.update_lr * 0.1
+        self.meta_lr = args.meta_lr * 0.1
         self.n_way = args.n_way
         self.k_spt = args.k_spt
         self.k_qry = args.k_qry
@@ -55,18 +58,20 @@ class Meta(nn.Module):
 
         # 实例化 Learner (self.net)
         # Learner 的构造函数签名是 __init__(self, config, num_nodes, num_subsets_A)
-        self.net = Learner(config=learner_layer_config,
-                           num_nodes=num_nodes_for_learner,
-                           # num_subsets_A=num_subsets_A_for_learner
+        # self.net = Learner(config=learner_layer_config,
+        #                    num_nodes=num_nodes_for_learner,
+        #                    # num_subsets_A=num_subsets_A_for_learner
+        #                    )
+
+        self.net = Learner(
                            )
 
         # 定义元优化器 (Meta Optimizer)，用于更新 Learner 的参数 (self.net.parameters())
         # 例如，使用 Adam 优化器
         self.meta_optim = torch.optim.Adam(self.net.parameters(), lr=self.meta_lr)
 
-        # 你可能还需要一个损失函数，例如交叉熵损失，如果 Learner 的输出是 logits
-        # 或者像 LDA 损失，如果 Learner 的输出是嵌入向量
-        # self.loss_fn = nn.CrossEntropyLoss() # 或者其他适合你任务的损失函数
+        # 添加交叉熵损失函数
+        self.loss_fn = nn.CrossEntropyLoss()
 
     def clip_grad_by_norm_(self, grad, max_norm):  # 这个函数可以保持不变
         """
@@ -95,7 +100,7 @@ class Meta(nn.Module):
                 g.data.mul_(clip_coef)
         return total_norm / counter
 
-    def forward(self, x_spt, y_spt, adj_spt, x_qry, y_qry, adj_qry):  # 增加了adj_spt, adj_qry参数
+    def forward(self, x_spt, y_spt, x_qry, y_qry):  # 增加了adj_spt, adj_qry参数
         """
         元训练步骤
         :param x_spt:   [b, setsz_spt, feature_dim] 或 [b, setsz_spt, num_nodes, node_feature_dim] (取决于Learner输入)
@@ -104,37 +109,46 @@ class Meta(nn.Module):
         :param x_qry:   [b, setsz_qry, feature_dim] 或 [b, setsz_qry, num_nodes, node_feature_dim]
         :param y_qry:   [b, setsz_qry] (标签)
         :param adj_qry: [b, setsz_qry, num_nodes, num_nodes] (查询集邻接矩阵)
-        :return: query set上的平均准确率 (在每个内部更新步骤之后)
+        :return: query set上的平均损失和学习后的邻接矩阵
         """
         task_num, setsz, c, t,v,m = x_spt.size()
         task_num,querysz, c, t,v,m = x_qry.size()
+        
         # 获取任务数量(meta-batch size)，即有多少个独立的任务需要元学习
         task_num = x_spt.size(0)
 
         # 获取每个任务的查询集大小(样本数)
         querysz = x_qry.size(1)
 
-        # 初始化列表存储每个更新步骤后的查询集损失
+        graph_generator = GraphGenerator(num_joints=v, in_channels=c).to(x_spt.device)
+
+        # 初始化列表存储每个更新步骤后的查询集损失和精度
         losses_q = [0 for _ in range(self.update_step + 1)]
+        accs_q = [0 for _ in range(self.update_step + 1)]  # 新增：跟踪精度
 
         # 初始化存储学习后邻接矩阵的变量
-        learned_adj = adj_qry.clone()  # 初始化为查询集的邻接矩阵
-
+        # 初始化邻接矩阵存储
+        adj_spt = torch.zeros(task_num, setsz, v, v).to(x_spt.device)
+        adj_qry = torch.zeros(task_num, querysz, v, v).to(x_qry.device)
+        learned_adj = torch.zeros_like(adj_qry)
+        # learned_adj = adj_qry.clone()  # 初始化为查询集的邻接矩阵
 
         # 遍历每个任务(每个episodic task)
         for i in range(task_num):
+
+            adj_spt[i] = GraphGenerator(x_spt[i])
             # 1. 初始评估
             logits, task_adj = self.net(x_spt[i], adj_spt[i], vars=None, bn_training=True)
 
-            if logits.size(0) != setsz:  # 检查是否不匹配
-                # 假设 logits 形状为 [N*M, C]，重塑为 [N, M, C]
-                M = logits.size(0) // setsz
-                logits = logits.view(setsz, M, -1)
-                # 对 M 维度取平均，得到 [N, C]
-                logits = logits.mean(dim=1)
+            # if logits.size(0) != setsz:  # 检查是否不匹配
+            #     # 假设 logits 形状为 [N*M, C]，重塑为 [N, M, C]
+            #     M = logits.size(0) // setsz
+            #     logits = logits.view(setsz, M, -1)
+            #     # 对 M 维度取平均，得到 [N, C]
+            #     logits = logits.mean(dim=1)
 
-            # 添加检查：确保 loss 是有效值
-            loss = lda_loss(logits, y_spt[i])  # 计算支持集的LDA损失
+            # 使用交叉熵损失替代LDA损失
+            loss = self.loss_fn(logits, y_spt[i])
             
             # 检查 loss 是否为 NaN 或 Inf，如果是则跳过此任务
             if torch.isnan(loss) or torch.isinf(loss):
@@ -176,51 +190,55 @@ class Meta(nn.Module):
 
             # 在第一次更新前评估模型
             with torch.no_grad():  # 不需要梯度计算，节省内存
-                # 获取查询集的初始嵌入表示(用原始元参数)
-                #todo 维度更改
-                logits_q,task_adj2 = self.net(x_qry[i], adj_qry[i], vars=self.net.parameters(), bn_training=True)
+                # 获取查询集的初始输出(用原始元参数)
+                logits_q, task_adj2 = self.net(x_qry[i], adj_qry[i], vars=self.net.parameters(), bn_training=True)
 
-                if logits_q.size(0) != querysz:  # 检查是否不匹配
-                    # 假设 logits 形状为 [N*M, C]，重塑为 [N, M, C]
-                    M = logits_q.size(0) // querysz
-                    logits_q = logits_q.view(querysz, M, -1)
-                    # 对 M 维度取平均，得到 [N, C]
-                    logits_q = logits_q.mean(dim=1)
+                # if logits_q.size(0) != querysz:  # 检查是否不匹配
+                #     M = logits_q.size(0) // querysz
+                #     logits_q = logits_q.view(querysz, M, -1)
+                #     logits_q = logits_q.mean(dim=1)
 
-                loss_q = lda_loss(logits_q, y_qry[i])
+                # 使用交叉熵损失
+                loss_q = self.loss_fn(logits_q, y_qry[i])
                 losses_q[0] += loss_q  # 累加损失
+                
+                # 计算准确率
+                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                correct = torch.eq(pred_q, y_qry[i]).sum().item()
+                accs_q[0] += correct / querysz  # 累加准确率
 
             # 2b. 使用更新后的参数(fast_weights)在查询集上评估第一次更新后的效果
             with torch.no_grad():
-                # 使用fast_weights获取查询集的嵌入表示
-                logits_q,task_adj2 = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
+                # 使用fast_weights获取查询集的输出
+                logits_q, task_adj2 = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
 
-                if logits_q.size(0) != querysz:  # 检查是否不匹配
-                    # 假设 logits_q 形状为 [N*M, C]，重塑为 [N, M, C]
-                    M = logits_q.size(0) // querysz
-                    logits_q = logits_q.view(querysz, M, -1)
-                    # 对 M 维度取平均，得到 [N, C]
-                    logits_q = logits_q.mean(dim=1)
+                # if logits_q.size(0) != querysz:  # 检查是否不匹配
+                #     M = logits_q.size(0) // querysz
+                #     logits_q = logits_q.view(querysz, M, -1)
+                #     logits_q = logits_q.mean(dim=1)
 
-                # 计算查询集上的LDA损失
-                loss_q = lda_loss(logits_q, y_qry[i])
-                # 累加第1步更新后的查询集损失
-                losses_q[1] += loss_q  # 累加第i个任务在第1步更新后的查询集损失
+                # 使用交叉熵损失
+                loss_q = self.loss_fn(logits_q, y_qry[i])
+                losses_q[1] += loss_q  # 累加第1步更新后的查询集损失
+                
+                # 计算准确率
+                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                correct = torch.eq(pred_q, y_qry[i]).sum().item()
+                accs_q[1] += correct / querysz  # 累加准确率
 
             # 2c. 进行更多内循环更新步骤(第2步到第update_step步)
             for k in range(1, self.update_step):
-                # 使用当前fast_weights计算支持集嵌入
-                logits,task_adj = self.net(x_spt[i], adj_spt[i], vars=fast_weights, bn_training=True)
+                # 使用当前fast_weights计算支持集输出
+                logits, task_adj = self.net(x_spt[i], adj_spt[i], vars=fast_weights, bn_training=True)
 
-                if logits.size(0) != setsz:  # 检查是否不匹配
-                    # 假设 logits 形状为 [N*M, C]，重塑为 [N, M, C]
-                    M = logits.size(0) // setsz
-                    logits = logits.view(setsz, M, -1)
-                    # 对 M 维度取平均，得到 [N, C]
-                    logits = logits.mean(dim=1)
+                # if logits.size(0) != setsz:  # 检查是否不匹配
+                #     M = logits.size(0) // setsz
+                #     logits = logits.view(setsz, M, -1)
+                #     logits = logits.mean(dim=1)
 
-                # 计算当前支持集的LDA损失
-                loss = lda_loss(logits, y_spt[i])
+                # 使用交叉熵损失
+                loss = self.loss_fn(logits, y_spt[i])
+                
                 # 检查 loss
                 if torch.isnan(loss) or torch.isinf(loss) or loss.item() == 0:
                     print(f"警告: 任务 {i} 在内循环步骤 {k} 的损失无效，跳过此更新")
@@ -243,32 +261,55 @@ class Meta(nn.Module):
                 # 使用更新后的fast_weights在查询集上评估
                 logits_q, task_adj2 = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
 
-                if logits_q.size(0) != querysz:  # 检查是否不匹配
-                    # 假设 logits_q 形状为 [N*M, C]，重塑为 [N, M, C]
-                    M = logits_q.size(0) // querysz
-                    logits_q = logits_q.view(querysz, M, -1)
-                    # 对 M 维度取平均，得到 [N, C]
-                    logits_q = logits_q.mean(dim=1)
+                # if logits_q.size(0) != querysz:  # 检查是否不匹配
+                #     M = logits_q.size(0) // querysz
+                #     logits_q = logits_q.view(querysz, M, -1)
+                #     logits_q = logits_q.mean(dim=1)
 
-                # 计算查询集上的LDA损失
-                loss_q = lda_loss(logits_q, y_qry[i])
+                # 使用交叉熵损失
+                loss_q = self.loss_fn(logits_q, y_qry[i])
+                losses_q[k + 1] += loss_q  # 累加当前步骤的查询集损失
+                
+                # 计算准确率
+                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                correct = torch.eq(pred_q, y_qry[i]).sum().item()
+                accs_q[k + 1] += correct / querysz  # 累加准确率
 
-                # 累加当前步骤的查询集损失
-                losses_q[k + 1] += loss_q  # 累加第i个任务在第 k+1 步更新后的查询集损失
         if self.update_step > 0:
             # 最后一次更新后使用 fast_weights 在查询集上运行模型
             _, final_adj = self.net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
+
+            # # Check if reshaping is needed
+            # if final_adj.size(0) != querysz:
+            #     # Assuming final_adj has shape [150, 3, 25, 25] and you want [75, 3, 25, 25]
+            #     # This means 150 = 75 * 2, where 2 is the M dimension
+            #     M = final_adj.size(0) // querysz
+            #
+            #     # Reshape to [75, M, 3, 25, 25]
+            #     reshaped_adj = final_adj.view(querysz, M, 3, 25, 25)
+            #
+            #     # Average over the M dimension to get [75, 3, 25, 25]
+            #     final_adj = reshaped_adj.mean(dim=1)
+
             learned_adj[i] = final_adj
 
+        # 使用所有任务在最后一步内循环更新后的查询集损失进行元优化
+        if losses_q[self.update_step] == 0:
+            # Create a zero tensor with requires_grad=True
+            loss_q = torch.tensor(0.0, device=x_spt.device, requires_grad=True)
+        else:
+            # Normal case - average the losses
+            loss_q = losses_q[self.update_step] / task_num
 
-        #    使用所有任务在最后一步内循环更新后 (self.update_step) 的查询集损失进行元优化
-        loss_q = losses_q[self.update_step] / task_num  # 平均查询集损失
+            # Ensure it's a tensor with requires_grad=True
+            if not isinstance(loss_q, torch.Tensor) or not loss_q.requires_grad:
+                loss_q = torch.tensor(loss_q, device=x_spt.device, requires_grad=True)
 
+        # 计算平均准确率（可选）
+        acc_q = accs_q[self.update_step] / task_num
+        
         self.meta_optim.zero_grad()
-        # 反向传播计算梯度
-        loss_q.backward()  # PyTorch会自动处理链式法则，将梯度反向传播到原始的self.net.parameters()
-        # self.clip_grad_by_norm_(self.net.parameters(), 10) # 可选的梯度裁剪
-        # 使用元优化器更新元参数
+        loss_q.backward()  # Now this should work
         self.meta_optim.step()
 
         # 检查最终的查询集损失
@@ -277,207 +318,6 @@ class Meta(nn.Module):
             print("警告: 最终查询集损失为 NaN/Inf，使用小常数替代")
             loss_q = torch.tensor(0.01, device=x_spt.device, requires_grad=True)
 
-        return loss_q,learned_adj
-
-    # def finetunning(self, x_spt, y_spt, adj_spt, x_qry, y_qry, adj_qry):
-    #     """
-    #     在新任务上进行微调和评估 (测试阶段)
-    #     :param x_spt:   [b, setsz_spt, C, T, V, M] - 支持集特征
-    #     :param y_spt:   [b, setsz_spt] - 支持集标签
-    #     :param adj_spt: [b, setsz_spt, num_subsets_A, num_nodes, num_nodes] - 支持集邻接矩阵
-    #     :param x_qry:   [b, setsz_qry, C, T, V, M] - 查询集特征
-    #     :param y_qry:   [b, setsz_qry] - 查询集标签
-    #     :param adj_qry: [b, setsz_qry, num_subsets_A, num_nodes, num_nodes] - 查询集邻接矩阵
-    #     :return: 准确率列表和学习后的邻接矩阵
-    #     """
-    #     task_num, setsz, c, t, v, m = x_spt.size()
-    #     task_num, querysz, c, t, v, m = x_qry.size()
-    #
-    #     # 初始化准确率列表和损失列表
-    #     losses_q = [0 for _ in range(self.update_step_test + 1)]
-    #     corrects = [0 for _ in range(self.update_step_test + 1)]
-    #
-    #     # 初始化存储学习后邻接矩阵的变量
-    #     learned_adj = adj_qry.clone()
-    #
-    #     # 深拷贝网络，避免修改原始元参数
-    #     net = deepcopy(self.net)
-    #
-    #     # 遍历每个任务
-    #     for i in range(task_num):
-    #         # 1. 初始评估 - 在任何参数更新前的基准性能
-    #         logits, task_adj = net(x_spt[i], adj_spt[i], vars=None, bn_training=True)
-    #
-    #         if logits.size(0) != setsz:
-    #             M = logits.size(0) // setsz
-    #             logits = logits.view(setsz, M, -1)
-    #             logits = logits.mean(dim=1)
-    #
-    #         loss = lda_loss(logits, y_spt[i])
-    #         grad = torch.autograd.grad(loss, net.parameters())
-    #         fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, net.parameters())))
-    #
-    #         # 在初始参数上评估查询集
-    #         with torch.no_grad():
-    #             logits_q, _ = net(x_qry[i], adj_qry[i], vars=net.parameters(), bn_training=True)
-    #
-    #             if logits_q.size(0) != querysz:
-    #                 M = logits_q.size(0) // querysz
-    #                 logits_q = logits_q.view(querysz, M, -1)
-    #                 logits_q = logits_q.mean(dim=1)
-    #
-    #             loss_q = lda_loss(logits_q, y_qry[i])
-    #             losses_q[0] += loss_q
-    #
-    #             # 可以添加准确率计算，这里使用零占位符
-    #             corrects[0] += 0
-    #
-    #         # 2. 使用更新后的参数评估第一次更新
-    #         with torch.no_grad():
-    #             logits_q, _ = net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
-    #
-    #             if logits_q.size(0) != querysz:
-    #                 M = logits_q.size(0) // querysz
-    #                 logits_q = logits_q.view(querysz, M, -1)
-    #                 logits_q = logits_q.mean(dim=1)
-    #
-    #             loss_q = lda_loss(logits_q, y_qry[i])
-    #             losses_q[1] += loss_q
-    #
-    #             # 可以添加准确率计算，这里使用零占位符
-    #             corrects[1] += 0
-    #
-    #         # 3. 后续更新步骤
-    #         for k in range(1, self.update_step_test):
-    #             # 使用当前fast_weights计算支持集嵌入
-    #             logits, _ = net(x_spt[i], adj_spt[i], vars=fast_weights, bn_training=True)
-    #
-    #             if logits.size(0) != setsz:
-    #                 M = logits.size(0) // setsz
-    #                 logits = logits.view(setsz, M, -1)
-    #                 logits = logits.mean(dim=1)
-    #
-    #             loss = lda_loss(logits, y_spt[i])
-    #             grad = torch.autograd.grad(loss, fast_weights)
-    #             fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights)))
-    #
-    #             # 评估当前步骤
-    #             with torch.no_grad():
-    #                 logits_q, _ = net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
-    #
-    #                 if logits_q.size(0) != querysz:
-    #                     M = logits_q.size(0) // querysz
-    #                     logits_q = logits_q.view(querysz, M, -1)
-    #                     logits_q = logits_q.mean(dim=1)
-    #
-    #                 loss_q = lda_loss(logits_q, y_qry[i])
-    #                 losses_q[k + 1] += loss_q
-    #
-    #                 # 可以添加准确率计算，这里使用零占位符
-    #                 corrects[k + 1] += 0
-    #
-    #         # 最后一次更新后获取学习到的邻接矩阵
-    #         if self.update_step_test > 0:
-    #             _, final_adj = net(x_qry[i], adj_qry[i], vars=fast_weights, bn_training=True)
-    #             learned_adj[i] = final_adj
-    #
-    #     # 计算平均损失和准确率
-    #     losses_q = [loss / task_num for loss in losses_q]
-    #     accs = [correct / (task_num * querysz) if task_num * querysz > 0 else 0 for correct in corrects]
-    #
-    #     return losses_q, accs, learned_adj
-
-
-
-def lda_loss(embeddings, labels):
-    # embeddings: [batch_size, embedding_dim]
-    # labels: [batch_size]
-    unique_labels = torch.unique(labels)
-    num_classes = len(unique_labels)
-    embedding_dim = embeddings.size(1)
-    device = embeddings.device
-
-    # 安全检查：如果类别太少或有非法值
-    if num_classes < 2:  # LDA至少需要两个类
-        return torch.tensor(0.01, device=device, requires_grad=True)
-        
-    # 检查嵌入向量是否包含非法值
-    if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
-        print("警告: 嵌入向量包含 NaN 或 Inf 值")
-        # 替换非法值
-        embeddings = torch.where(torch.isnan(embeddings) | torch.isinf(embeddings), 
-                                 torch.zeros_like(embeddings), 
-                                 embeddings)
-
-    # 计算类均值
-    class_means = torch.zeros(num_classes, embedding_dim, device=device)
-    class_counts = torch.zeros(num_classes, device=device)
-    
-    for i, label_val in enumerate(unique_labels):
-        class_mask = (labels == label_val)
-        class_counts[i] = class_mask.sum()
-        
-        # 安全检查：避免空类
-        if class_counts[i] == 0:
-            class_means[i] = torch.zeros(embedding_dim, device=device)
-        else:
-            class_means[i] = embeddings[class_mask].mean(dim=0)
-
-    # 检查类均值是否有效
-    if torch.isnan(class_means).any():
-        print("警告: 类均值包含 NaN 值")
-        return torch.tensor(0.01, device=device, requires_grad=True)
-
-    # 1. 计算类内散度 (S_W) 和对角正则化
-    s_w = torch.zeros(embedding_dim, embedding_dim, device=device)
-    reg_strength = 1e-3  # 增加正则化强度
-    
-    for i, label_val in enumerate(unique_labels):
-        class_mask = (labels == label_val)
-        if class_mask.sum() > 0:  # 确保类不为空
-            class_embeddings = embeddings[class_mask]
-            mean_centered = class_embeddings - class_means[i].unsqueeze(0)
-            s_w += mean_centered.t().mm(mean_centered)
-    
-    # 强化正则化以确保数值稳定性
-    s_w += torch.eye(embedding_dim, device=device) * reg_strength
-    
-    # 2. 计算类间散度 (S_B)
-    valid_samples = (class_counts > 0).sum()
-    if valid_samples < 2:
-        print("警告: 不足两个有效类别")
-        return torch.tensor(0.01, device=device, requires_grad=True)
-        
-    overall_mean = embeddings.mean(dim=0)
-    s_b = torch.zeros(embedding_dim, embedding_dim, device=device)
-    
-    for i, label_val in enumerate(unique_labels):
-        if class_counts[i] > 0:  # 确保类不为空
-            mean_diff = (class_means[i] - overall_mean).unsqueeze(1)
-            s_b += class_counts[i] * mean_diff.mm(mean_diff.t())
-
-    # 解决方程式，使用更稳定的方法
-    try:
-        # 使用特征值分解而不是直接求逆
-        eigenvalues, eigenvectors = torch.linalg.eigh(s_w)
-        # 处理可能的零或接近零的特征值
-        eigenvalues = torch.clamp(eigenvalues, min=1e-6)
-        # 构建 S_W^(-1/2)
-        s_w_inv_sqrt = eigenvectors @ torch.diag(1.0 / torch.sqrt(eigenvalues)) @ eigenvectors.t()
-        # 计算 S_W^(-1/2) * S_B * S_W^(-1/2) 的特征值
-        transformed_s_b = s_w_inv_sqrt @ s_b @ s_w_inv_sqrt
-        # 使用特征值和来近似 trace(S_W^-1 * S_B)
-        trace_s_w_inv_s_b = torch.linalg.eigvalsh(transformed_s_b).sum()
-        loss = -trace_s_w_inv_s_b
-    except Exception as e:
-        print(f"LDA计算错误: {str(e)}")
-        # 使用备用损失函数
-        loss = torch.trace(s_w) - 0.1 * torch.trace(s_b)
-
-    # 确保损失是有效值
-    if torch.isnan(loss) or torch.isinf(loss):
-        print("LDA损失是NaN或Inf，返回备用损失")
-        return torch.tensor(0.01, device=device, requires_grad=True)
-
-    return loss
+        # 返回平均损失和学习后的邻接矩阵
+        return loss_q, learned_adj
 

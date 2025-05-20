@@ -29,9 +29,7 @@ import yaml  # 用于读写 YAML 配置文件
 from tensorboardX import SummaryWriter  # 用于将数据写入 TensorBoard 进行可视化
 from tqdm import tqdm  # 用于显示进度条
 from maml.Meta import Meta
-from feeders.feeder_ntu import Feeder
-from sample import BatchSampler
-
+from maml.create_adj import Adj_Matrix
 # 导入自定义库
 from torchlight import DictAction  # 自定义的 argparse Action，用于将 key=value 形式的参数解析为字典
 
@@ -377,9 +375,9 @@ class Processor():
         """
         self.model.train()  # 设置模型为训练模式
 
-        # 初始化指标跟踪器 - 只保留 loss_values
+        # 初始化指标跟踪器
         loss_values = []
-        # 移除 acc_values = []
+        acc_values = []  # 添加准确率跟踪
 
         # 创建进度条以显示训练进度
         progress_bar = tqdm(self.data_loader['train'], desc=f'Meta-Train Epoch {epoch + 1}')
@@ -389,14 +387,18 @@ class Processor():
             # 将数据移到 GPU
             x_spt, y_spt = x_spt.cuda(self.output_device), y_spt.cuda(self.output_device)
             x_qry, y_qry = x_qry.cuda(self.output_device), y_qry.cuda(self.output_device)
-            
-            # 生成邻接矩阵
-            adj_spt = self.generate_adjacency_matrix(x_spt).cuda(self.output_device)
-            adj_qry = self.generate_adjacency_matrix(x_qry).cuda(self.output_device)
-            
+
+            # # 生成邻接矩阵
+            # adj_spt = self.generate_adjacency_matrix(x_spt).cuda(self.output_device)
+            # adj_qry = self.generate_adjacency_matrix(x_qry).cuda(self.output_device)
+
             # 执行元学习训练步骤
             try:
-                loss, learned_adj = self.model(x_spt, y_spt, adj_spt, x_qry, y_qry, adj_qry)
+                # loss, learned_adj = self.model(x_spt, y_spt, adj_spt, x_qry, y_qry, adj_qry)
+                loss, learned_adj = self.model(x_spt, y_spt, x_qry, y_qry)
+
+                # 这里loss是查询集上的平均损失
+                # 由于Meta类中已经优化过参数，所以我们只需记录损失和准确率
             except Exception as e:
                 # 捕获并记录错误
                 self.print_log(f"训练步骤 {step} 出错: {str(e)}")
@@ -415,39 +417,28 @@ class Processor():
                 torch.save(learned_adj, adj_path)
                 self.print_log(f'保存学习后的邻接矩阵到: {adj_path}')
             
-            # 只收集损失
+            # 收集损失
             loss_values.append(loss.item())
-            # 移除 acc_values.append(acc)
-
-            # 更新进度条信息 - 只显示 loss
+            
+            # 更新进度条信息
             progress_bar.set_postfix({
                 'loss': f'{loss.item():.4f}'
-                # 移除 'acc' 显示
             })
 
-            # 每隔log_interval步打印一次详细信息 - 只打印 loss
+            # 每隔log_interval步打印一次详细信息
             if step % self.arg.log_interval == 0:
                 self.print_log(
                     f'Meta-Train Epoch: {epoch + 1} [{step}/{len(self.data_loader["train"])}]\t'
                     f'Loss: {loss.item():.4f}'
-                    # 移除 Acc 显示
                 )
 
-                # 如果在训练阶段，记录到TensorBoard - 只记录 loss
-                # if hasattr(self, 'train_writer'):
-                #     self.train_writer.add_scalar('meta_train_loss', loss.item(), self.global_step)
-                #     # 移除 self.train_writer.add_scalar('meta_train_acc', acc, self.global_step)
-                #     self.global_step += 1
-
-        # 计算整个周期的平均损失 - 只计算 loss
+        # 计算整个周期的平均损失
         mean_loss = np.mean(loss_values)
-        # 移除 mean_acc = np.mean(acc_values)
 
-        # 打印训练周期的总结 - 只显示 loss
+        # 打印训练周期的总结
         self.print_log(
             f'\nMeta-Train Epoch: {epoch + 1} completed\t'
             f'Average Loss: {mean_loss:.4f}'
-            # 移除 Average Acc 显示
         )
 
         # 如果需要保存模型 - 修改保存路径，不再使用 acc
