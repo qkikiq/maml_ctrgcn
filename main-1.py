@@ -467,31 +467,28 @@ class Processor():
             self.global_step += 1  # 全局步数加 1
             # 将数据和标签移动到 GPU
             with torch.no_grad():  # 移动数据不需要计算梯度
-                data = data.float().cuda(self.output_device)
-                label = label.long().cuda(self.output_device)
+                data_s,data_q = data_s.float().cuda(self.output_device), data_q.float().cuda(self.output_device)
+                label_s, label_q = label_s.long().cuda(self.output_device), label_q.long().cuda(self.output_device)
             timer['dataloader'] += self.split_time()  # 记录数据加载和传输时间
 
-            # === 前向传播 ===
-            output = self.model(data_s)  # 模型进行前向计算
-            loss = self.loss(output, label_s)  # 计算损失
-
-            #存model的参数
-
-            # === 反向传播 ===
-            self.optimizer.zero_grad()  # 清空之前的梯度
-            loss.backward()  # 计算梯度
-            self.optimizer.step()  # 根据梯度更新模型参数
 
 
 
-            # === 前向传播 ===
-            output = self.model(data_q)  # 模型进行前向计算
-            loss = self.loss(output, label_q)  # 计算损失
-
-            # === 反向传播 ===
-            self.optimizer.zero_grad()  # 清空之前的梯度
-            loss.backward()  # 计算梯度
-            self.optimizer.step()  # 根据梯度更新模型参数
+            # # === 前向传播 ===
+            # output = self.model(data_s)  # 模型进行前向计算
+            # loss = self.loss(output, label_s)  # 计算损失
+            # #存model的参数
+            # # === 反向传播 ===
+            # self.optimizer.zero_grad()  # 清空之前的梯度
+            # loss.backward()  # 计算梯度
+            # self.optimizer.step()  # 根据梯度更新模型参数
+            # # === 前向传播 ===
+            # output = self.model(data_q)  # 模型进行前向计算
+            # loss = self.loss(output, label_q)  # 计算损失
+            # # === 反向传播 ===
+            # self.optimizer.zero_grad()  # 清空之前的梯度
+            # loss.backward()  # 计算梯度
+            # self.optimizer.step()  # 根据梯度更新模型参数
 
 
 

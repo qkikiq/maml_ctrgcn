@@ -101,7 +101,7 @@ class Feeder(Dataset):
         data_numpy = np.array(data_numpy)
 
         # 计算有效帧的数量（即在该样本中，非零的时间步数）
-        # valid_frame_num = np.sum(data_numpy.sum(0).sum(-1).sum(-1) != 0)
+        valid_frame_num = np.sum(data_numpy.sum(0).sum(-1).sum(-1) != 0)
         # 解释：
         # data_numpy.sum(0) 会计算每个时间步的所有关节的和；
         # .sum(-1) 会计算每个关节的所有轴的和（例如 x, y, z 坐标），
@@ -110,7 +110,7 @@ class Feeder(Dataset):
         # 调用工具函数 valid_crop_resize，裁剪并调整数据大小
         #valid_frame_num 表示有效帧数，p_interval 表示间隔，window_size 表示窗口大小
         #todo 样本的原始输入
-        # data_numpy = tools.valid_crop_resize(data_numpy, valid_frame_num, self.p_interval, self.window_size)
+        data_numpy = tools.valid_crop_resize(data_numpy, valid_frame_num, self.p_interval, self.window_size)
 
         # 如果开启了随机旋转，则调用工具函数 random_rot 对数据进行旋转处理
         if self.random_rot:

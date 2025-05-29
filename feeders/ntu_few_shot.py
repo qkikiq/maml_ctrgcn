@@ -12,11 +12,10 @@ class ntu60_few_shot(Dataset):
                  random_move=False, random_rot=False, normalization=False, debug=False, use_mmap=False,
                  bone=False, vel=False,
             # 小样本学习参数
-                batchsz=4,
+                batchsz=10000,
                 n_way=5,
-                k_spt=5,
-                k_qry=15,
-                # task_num=4,
+                k_shot=1,
+                k_query=15,
                 num_episodes=10
                  ):
         """
@@ -55,9 +54,8 @@ class ntu60_few_shot(Dataset):
         # 小样本学习特定属性
         self.batchsz = batchsz
         self.n_way = n_way
-        self.k_spt = k_spt
-        self.k_qry = k_qry
-        # self.task_num = task_num
+        self.k_shot = k_shot
+        self.k_query = k_query
         self.num_episodes = num_episodes
 
         # 调用加载数据的函数
@@ -131,16 +129,16 @@ class ntu60_few_shot(Dataset):
                 class_indices = np.where(self.label == cls)[0]
                 
                 # 确保样本数量足够
-                if len(class_indices) < (self.k_spt + self.k_qry):
+                if len(class_indices) < (self.k_shot + self.k_query):
                     continue  # 如果样本不足，跳过这个类别
                 
                 # 2. 为每个类别随机选择 k_shot + k_query 个样本
-                selected_indices = np.random.choice(class_indices, self.k_spt + self.k_qry, replace=False)
+                selected_indices = np.random.choice(class_indices, self.k_shot + self.k_query, replace=False)
                 np.random.shuffle(selected_indices)
                 
                 # 分割为支持集和查询集
-                support_indices = selected_indices[:self.k_spt]  # 支持集索引
-                query_indices = selected_indices[self.k_spt:]  # 查询集索引
+                support_indices = selected_indices[:self.k_shot]  # 支持集索引
+                query_indices = selected_indices[self.k_shot:]  # 查询集索引
                 
                 # 获取支持集和查询集的样本索引列表
                 support_x.append(support_indices.tolist())
@@ -171,20 +169,21 @@ class ntu60_few_shot(Dataset):
         # 确保索引有效
         if index >= len(self.support_x_batch):
             raise IndexError(f"索引 {index} 超出批次范围 {len(self.support_x_batch)}")
-        
+
         # 初始化支持集和查询集的数据结构
         support_x = []  # 支持集数据
         support_y = []  # 支持集标签
         query_x = []  # 查询集数据
         query_y = []  # 查询集标签
-        
+
+
         # 处理支持集
         for i, class_indices in enumerate(self.support_x_batch[index]):
             for idx in class_indices:
                 # 获取数据样本
                 data = self.data[idx]
                 data = np.array(data)  # 确保是numpy数组
-                
+
                 # 应用数据变换
                 if self.random_rot:
                     data = tools.random_rot(data)
@@ -197,21 +196,21 @@ class ntu60_few_shot(Dataset):
                 if self.vel:
                     data[:, :-1] = data[:, 1:] - data[:, :-1]
                     data[:, -1] = 0
-                
+
                 # 如果需要标准化
                 if self.normalization:
                     data = (data - self.mean_map) / self.std_map
-                    
+
                 support_x.append(data)
                 support_y.append(i)  # 使用相对类别标签（0到n_way-1）
-        
+
         # 处理查询集
         for i, class_indices in enumerate(self.query_x_batch[index]):
             for idx in class_indices:
                 # 获取数据样本
                 data = self.data[idx]
                 data = np.array(data)  # 确保是numpy数组
-                
+
                 # 应用与支持集相同的数据变换
                 if self.random_rot:
                     data = tools.random_rot(data)
@@ -224,14 +223,14 @@ class ntu60_few_shot(Dataset):
                 if self.vel:
                     data[:, :-1] = data[:, 1:] - data[:, :-1]
                     data[:, -1] = 0
-                
+
                 # 如果需要标准化
                 if self.normalization:
                     data = (data - self.mean_map) / self.std_map
-                    
+
                 query_x.append(data)
                 query_y.append(i)  # 使用相对类别标签
-        
+
         # 将列表转换为张量
         support_x = np.stack(support_x, axis=0)
         support_y = np.array(support_y)

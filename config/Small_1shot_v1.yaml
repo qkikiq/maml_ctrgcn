@@ -1,4 +1,4 @@
-work_dir: ./work_dir/ntu60_fewshot/xsub/ctrgcn_j
+work_dir: ./work_dir/ntu60_fewshot/xsub/0529
 
 feeder: feeders.ntu_few_shot.ntu60_few_shot # Make sure this path is correct
 
@@ -17,12 +17,6 @@ train_feeder_args:
   bone: False
   vel: False
 
-  batchsz: 4
-#  META_BATCH: true
-  n_way: 5
-  k_spt: 1
-  k_qry: 15
-
 test_feeder_args:
   # Parameters for Feeder.__init__
   data_path: data/ntu/NTU60_CS.npz
@@ -39,28 +33,27 @@ test_feeder_args:
   vel: False
   data_list: null               # Or path to a specific data list file
 
-  # Parameters for MAML data sampling / DataLoader / testing workflow
-  batchsz: 4
-#  META_BATCH: true
-  n_way: 5
-  k_spt: 1
-  k_qry: 15
-#  task_num: 10           # Query samples per class for general test tasks (if different logic applies)
-#  VAL_FRE_ITER: 100         # Might be a global parameter rather than test_feeder specific
-  # batch_size & num_worker for test DataLoader would typically be set in the main script
-  # based on how many test tasks are processed in parallel, or if not present here,
-  # will rely on global batch_size/test_batch_size and num_worker args.
-
-model: maml.Meta.Model # Make sure this path is correct
+model: maml.meta_shird.Meta # Make sure this path is correct
 model_args:
   num_nodes: 25
-  num_subsets_A: 3
-  learner_config:
-    - ['gcn', {'in_channels': 3, 'out_channels': 64, 'residual': True}]
-    - ['relu', {}]
-    - ['gcn', {'in_channels': 64, 'out_channels': 64, 'residual': True}]
-    - ['relu', {}]
-    - ['gcn', {'in_channels': 64, 'out_channels': 128, 'residual': True}]
-    - ['relu', {}]
-    - ['global_mean_pool', {}]
-    - ['linear', {'in_features': 128, 'out_features': 128}]
+  update_lr: 0.01
+  meta_lr: 0.001
+  n_way: 5
+  k_shot: 1
+  k_query: 15
+  task_num: 4
+  update_step: 3
+
+#  num_subsets_A: 3
+#  learner_args:
+#    - ['gcn', {'in_channels': 3, 'out_channels': 64, 'residual': True}]
+#    - ['relu', {}]
+#    - ['gcn', {'in_channels': 64, 'out_channels': 64, 'residual': True}]
+#    - ['relu', {}]
+#    - ['gcn', {'in_channels': 64, 'out_channels': 128, 'residual': True}]
+#    - ['relu', {}]
+#    - ['global_mean_pool', {}]
+#    - ['linear', {'in_features': 128, 'out_features': 128}]
+
+# training
+device: [0]
